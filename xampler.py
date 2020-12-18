@@ -108,7 +108,7 @@ def gen_nodes(
                 attr = node.attributes[attr_name]
                 if attr.is_prohibited() or attr.is_optional() and random.randrange(2):
                     continue
-                attr_value = value_generator(node.attributes[attr_name], node, extra_data)
+                attr_value = value_generator(node.attributes[attr_name], dest_elem, extra_data)
                 dest_elem.set(attr_name, str(attr_value))
             value = value_generator(node, dest_elem, extra_data)
             dest_elem.text = str(value)
@@ -116,7 +116,7 @@ def gen_nodes(
     def value_generator(xsd_elem, node, extra_data):
         n = xsd_elem.local_name
         if isinstance(xsd_elem, xmlschema.validators.XsdAttribute):
-            n = node.local_name + '@' + n
+            n = node.tag + '@' + n
         if n in value_generators:
             return value_generators[n](extra_data, node)
         else:
