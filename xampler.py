@@ -32,9 +32,9 @@ ts_max = int(datetime.datetime(2050, 1, 1).timestamp())
 
 primitive_values = {
     '{http://www.w3.org/2001/XMLSchema}dateTime':
-        lambda: datetime.datetime.fromtimestamp(random.randint(ts_min, ts_max)),
+        lambda: datetime.datetime.fromtimestamp(random.randint(ts_min, ts_max)).strftime('%Y-%m-%dT%H:%M:%SZ'),
     '{http://www.w3.org/2001/XMLSchema}string':
-        lambda: rstr.rstr(string.printable, 2000),
+        lambda: rstr.rstr(string.ascii_letters + string.digits + string.punctuation, 2000),
     '{http://www.w3.org/2001/XMLSchema}int':
         lambda: random.randint(-2 ** 31, 2 ** 31),
     '{http://www.w3.org/2001/XMLSchema}decimal':
@@ -50,17 +50,22 @@ def gen_nodes(
         root_xsd_node: xmlschema.XsdElement,
         dest_root: ET.Element,
         repetitions: Dict = None,
-        value_generators: Dict[str, Callable[[str], Any]] = None,
+        value_generators: Dict[str, Callable[[str, ET.Element], Any]] = None,
         type_generators: Dict[str, Callable[[], Any]] = None,
-):
+        element_hook: Callable[[ET.Element], Dict] = None):
+    def default_element_hook(_):
+        return {}
+
     if repetitions is None:
         repetitions = {}
     if value_generators is None:
         value_generators = {}
     if type_generators is None:
         type_generators = {}
+    if element_hook is None:
+        element_hook = default_element_hook
 
-    def _gen_nodes(xsd_node: xmlschema.XsdElement, dest_elem: ET.Element):
+    def _gen_nodes(xsd_node: xmlschema.XsdElement, dest_elem: ET.Element, extra_data: Dict):
         """
         Handles repetition of the node
         :param dest_elem:
@@ -69,7 +74,7 @@ def gen_nodes(
 
         tag_name = xsd_node.local_name
         if tag_name in repetitions:
-            repeat = repetitions[tag_name]()
+            repeat = repetitions[tag_name](extra_data)
         else:
             if max_occ is None:
                 repeat = 2  # random.randint(min_occ, MAX_REPEAT)
@@ -84,33 +89,36 @@ def gen_nodes(
         for i in range(repeat):
             logging.info(f'{indent_for(dest_elem)}<{xsd_node.local_name}>[{i}]')
             new_element = ET.SubElement(dest_elem, xsd_node.local_name)
-            gen_node(xsd_node, new_element)
+            extra_dict = element_hook(new_element)
+            if extra_dict:
+                extra_data = {**extra_data, **extra_dict}
+            gen_node(xsd_node, new_element, extra_data)
             logging.info(f'{indent_for(dest_elem)}</{xsd_node.local_name}>')
 
-    def gen_node(node: xmlschema.XsdElement, dest_elem):
+    def gen_node(node: xmlschema.XsdElement, dest_elem, extra_data):
         """
         Generates one node, handling complex/simple node type
         """
         if node.type.has_complex_content():
             assert node.type.content.model == 'sequence'
             for n in node.type.content:
-                _gen_nodes(n, dest_elem)
+                _gen_nodes(n, dest_elem, extra_data)
         else:
             for attr_name in node.attributes:
                 attr = node.attributes[attr_name]
                 if attr.is_prohibited() or attr.is_optional() and random.randrange(2):
                     continue
-                attr_value = value_generator(node.attributes[attr_name], node)
+                attr_value = value_generator(node.attributes[attr_name], node, extra_data)
                 dest_elem.set(attr_name, str(attr_value))
-            value = value_generator(node, dest_elem)
+            value = value_generator(node, dest_elem, extra_data)
             dest_elem.text = str(value)
 
-    def value_generator(xsd_elem, node):
+    def value_generator(xsd_elem, node, extra_data):
         n = xsd_elem.local_name
         if isinstance(xsd_elem, xmlschema.validators.XsdAttribute):
             n = node.local_name + '@' + n
         if n in value_generators:
-            return value_generators[n](node)
+            return value_generators[n](extra_data, node)
         else:
             return by_type_value_generator(xsd_elem)
 
@@ -147,9 +155,9 @@ def gen_nodes(
         if n in type_generators:
             return type_generators[n]()
         else:
-            return primitive_values[atomic_type.name]()
+            return primitive_values[n]()
 
-    _gen_nodes(root_xsd_node, dest_root)
+    _gen_nodes(root_xsd_node, dest_root, {})
 
 
 '''
