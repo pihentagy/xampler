@@ -20,6 +20,8 @@ def indent(num):
 
 @functools.lru_cache
 def num_parents(node):
+    if node is None:
+        return 0
     return sum(1 for _ in node.iterancestors())
 
 
@@ -77,7 +79,7 @@ def gen_nodes(
             repeat = repetitions[tag_name](extra_data)
         else:
             if max_occ is None:
-                repeat = 2  # random.randint(min_occ, MAX_REPEAT)
+                repeat = random.randint(min_occ, MAX_REPEAT)
             else:
                 repeat = random.randint(min_occ, max_occ)
 
