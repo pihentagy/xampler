@@ -117,7 +117,7 @@ def gen_nodes(
         # TODO use qualified names here
         n = xsd_elem.local_name
         if isinstance(xsd_elem, xmlschema.validators.XsdAttribute):
-            n = node.tag + '@' + n
+            n = ET.QName(node).localname + '@' + n
         if n in value_generators:
             return value_generators[n](extra_data, node)
         else:
