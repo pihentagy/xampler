@@ -88,7 +88,7 @@ def gen_nodes(
 
         for i in range(repeat):
             logging.info(f'{indent_for(dest_elem)}<{xsd_node.local_name}>[{i}]')
-            new_element = ET.SubElement(dest_elem, xsd_node.local_name)
+            new_element = ET.SubElement(dest_elem, xsd_node.name)
             extra_dict = element_hook(new_element)
             if extra_dict:
                 extra_data = {**extra_data, **extra_dict}
@@ -114,6 +114,7 @@ def gen_nodes(
             dest_elem.text = str(value)
 
     def value_generator(xsd_elem, node, extra_data):
+        # TODO use qualified names here
         n = xsd_elem.local_name
         if isinstance(xsd_elem, xmlschema.validators.XsdAttribute):
             n = node.tag + '@' + n
