@@ -14,7 +14,7 @@ INDENT_SHIFT = 4
 
 
 @functools.lru_cache
-def indent(num):
+def indent(num: int):
     return ' ' * INDENT_SHIFT * num
 
 
@@ -38,46 +38,30 @@ primitive_values = {
     '{http://www.w3.org/2001/XMLSchema}string':
         lambda: rstr.rstr(string.ascii_letters + string.digits + string.punctuation, 2000),
     '{http://www.w3.org/2001/XMLSchema}int':
-        lambda: random.randint(-2 ** 31, 2 ** 31),
+        lambda: random.randint(-2 ** 32, 2 ** 31),
+    '{http://www.w3.org/2001/XMLSchema}long':
+        lambda: random.randrange(-2 ** 64, 2 ** 63),
     '{http://www.w3.org/2001/XMLSchema}decimal':
         lambda: random.uniform(-1e32, 1e32)
 }
-restrictions = {
-    'XsdMaxLengthFacet': lambda v: rstr.rstr(string.ascii_letters, 0, v.value),
-    'XsdEnumerationFacets': lambda v: random.choice(v.enumeration),
-}
 
 
-def gen_nodes(
+def xample(
         root_xsd_node: xmlschema.XsdElement,
         dest_root: ET.Element,
-        repetitions: Dict = None,
-        value_generators: Dict[str, Callable[[str, ET.Element], Any]] = None,
-        type_generators: Dict[str, Callable[[], Any]] = None,
-        element_hook: Callable[[ET.Element], Dict] = None):
-    def default_element_hook(_):
-        return {}
-
-    if repetitions is None:
-        repetitions = {}
-    if value_generators is None:
-        value_generators = {}
-    if type_generators is None:
-        type_generators = {}
-    if element_hook is None:
-        element_hook = default_element_hook
-
-    def _gen_nodes(xsd_node: xmlschema.XsdElement, dest_elem: ET.Element, extra_data: Dict):
+        repetitions_callback: Callable[[xmlschema.XsdElement], int],
+        value_generatorrs: Callable[[xmlschema.XsdElement, ET.Element], Optional[object]],
+        element_callback: Callable[[xmlschema.XsdElement], None]):
+    def gen_nodes(xsd_node: xmlschema.XsdElement, dest_elem: ET.Element):
         """
         Handles repetition of the node
+        :param xsd_node:
         :param dest_elem:
         """
         min_occ, max_occ = xsd_node.min_occurs, xsd_node.max_occurs
 
-        tag_name = xsd_node.local_name
-        if tag_name in repetitions:
-            repeat = repetitions[tag_name](extra_data)
-        else:
+        repeat = repetitions_callback(xsd_node)
+        if repeat is None:
             if max_occ is None:
                 repeat = random.randint(min_occ, MAX_REPEAT)
             else:
@@ -91,39 +75,43 @@ def gen_nodes(
         for i in range(repeat):
             logging.info(f'{indent_for(dest_elem)}<{xsd_node.local_name}>[{i}]')
             new_element = ET.SubElement(dest_elem, xsd_node.name)
-            extra_dict = element_hook(new_element)
-            if extra_dict:
-                extra_data = {**extra_data, **extra_dict}
-            gen_node(xsd_node, new_element, extra_data)
+            gen_node(xsd_node, new_element)
             logging.info(f'{indent_for(dest_elem)}</{xsd_node.local_name}>')
 
-    def gen_node(node: xmlschema.XsdElement, dest_elem, extra_data):
+    def gen_node(xsd_elem: xmlschema.XsdElement, dest_elem):
+        def gen_attrs():
+            for attr_name in xsd_elem.attributes:
+                attr = xsd_elem.attributes[attr_name]
+                # TODO use repetitions callback to determine attribute repetition
+                if attr.is_prohibited():
+                    continue
+                if attr.is_optional():
+                    repeat = repetitions_callback(attr)
+                    if repeat is None:
+                        repeat = random.randrange(2) == 0
+                    if repeat is False:
+                        continue
+                attr_value = value_generator(attr, dest_elem)
+                dest_elem.set(attr_name, str(attr_value))
+
         """
         Generates one node, handling complex/simple node type
         """
-        if node.type.has_complex_content():
-            assert node.type.content.model == 'sequence'
-            for n in node.type.content:
-                _gen_nodes(n, dest_elem, extra_data)
+        if xsd_elem.type.has_complex_content():
+            element_callback(xsd_elem)
+            assert xsd_elem.type.content.model == 'sequence'
+            for n in xsd_elem.type.content:
+                gen_nodes(n, dest_elem)
         else:
-            for attr_name in node.attributes:
-                attr = node.attributes[attr_name]
-                if attr.is_prohibited() or attr.is_optional() and random.randrange(2):
-                    continue
-                attr_value = value_generator(node.attributes[attr_name], dest_elem, extra_data)
-                dest_elem.set(attr_name, str(attr_value))
-            value = value_generator(node, dest_elem, extra_data)
+            gen_attrs()
+            value = value_generator(xsd_elem, dest_elem)
             dest_elem.text = str(value)
 
-    def value_generator(xsd_elem, node, extra_data):
-        # TODO use qualified names here
-        n = xsd_elem.local_name
-        if isinstance(xsd_elem, xmlschema.validators.XsdAttribute):
-            n = ET.QName(node).localname + '@' + n
-        if n in value_generators:
-            return value_generators[n](extra_data, node)
-        else:
-            return by_type_value_generator(xsd_elem)
+    def value_generator(xsd_elem: xmlschema.XsdElement, node: ET.Element) -> str:
+        value = value_generatorrs(xsd_elem, node)
+        if value is None:
+            value = by_type_value_generator(xsd_elem)
+        return value
 
     def by_type_value_generator(xsd_elem):
         """
@@ -146,21 +134,34 @@ def gen_nodes(
     def generate_by_restriction(xsd_elem):
         if len(xsd_elem.type.validators) == 0:  # no validator, just return default
             return generate_by_type(xsd_elem.type.base_type)
-        elif len(xsd_elem.type.validators) > 1:
-            raise ValueError('Cannot handle more restrictions')
+        elif len(xsd_elem.type.facets) == 1 and \
+                isinstance(xsd_elem.type.validators[0], xmlschema.validators.facets.XsdEnumerationFacets):
+            return random.choice(xsd_elem.type.validators[0].enumeration)
+        min_len, max_len = None, None
+        pattern = None
+        for v in xsd_elem.type.facets.values():
+            if isinstance(v, xmlschema.validators.facets.XsdMinLengthFacet):
+                min_len = v.value
+            elif isinstance(v, xmlschema.validators.facets.XsdMaxLengthFacet):
+                max_len = v.value
+            elif isinstance(v, xmlschema.validators.facets.XsdPatternFacets):
+                assert len(v.patterns) == 1
+                pattern = v.patterns[0].pattern
+            else:
+                logging.critical(f"Unknown facet {v}")
+        if pattern is not None:
+            if min_len or max_len:
+                logging.warning(f"Cannot take into consideration min and max length when using regex pattern")
+            return rstr.xeger(pattern)
         else:
-            v = xsd_elem.type.validators[0]
-            return restrictions[type(v).__name__](v)
+            if min_len is None:
+                min_len = 0  # TODO Should it be 0 or 1?
+            return rstr.rstr(string.ascii_letters + string.digits + string.punctuation, min_len, max_len)
 
     def generate_by_type(atomic_type):
-        # TODO type specific custom generator
-        n = atomic_type.name
-        if n in type_generators:
-            return type_generators[n]()
-        else:
-            return primitive_values[n]()
+        return primitive_values[atomic_type.name]()
 
-    _gen_nodes(root_xsd_node, dest_root, {})
+    gen_nodes(root_xsd_node, dest_root)
 
 
 '''
